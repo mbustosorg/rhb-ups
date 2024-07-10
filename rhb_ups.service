@@ -1,0 +1,14 @@
+[Unit]
+Description=rhb-ups
+After=network.target
+
+[Service]
+ExecStart=/home/pi/projects/rhb-ups/run.sh
+WorkingDirectory=/home/pi/projects/rhb-ups
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target

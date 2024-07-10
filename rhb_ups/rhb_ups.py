@@ -13,16 +13,16 @@
 """
 
 import argparse
+import asyncio
+import datetime
 import logging
 from logging.handlers import RotatingFileHandler
-import datetime
+from subprocess import call
 
+from INA219 import INA219
 import RPi.GPIO as GPIO
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import AsyncIOOSCUDPServer
-
-
-import asyncio
 
 FORMAT = "%(asctime)-15s|%(module)s|%(lineno)d|%(message)s"
 logging.basicConfig(format=FORMAT)
@@ -37,9 +37,7 @@ logger.addHandler(FILE_HANDLER)
 last_change = 0
 
 GPIO.setmode(GPIO.BOARD)
-MAINS_POWER_PIN = 21
 LIGHT_RELAY_PIN = 22
-GPIO.setup(MAINS_POWER_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 GPIO.setup(LIGHT_RELAY_PIN, GPIO.OUT)
 light_on = False
 light_on_time = None
@@ -59,25 +57,41 @@ def handle_light(unused_addr, args):
 async def loop():
     global light_on, light_on_time
     car_started_for_night = False
+    worklight_on = False
+    GPIO.output(LIGHT_RELAY_PIN, 0)
+    ina219 = INA219(addr=0x43)
     while True:
         time = datetime.datetime.now()
+        car_running = ina219.getCurrent_mA() >= 0.0
+        battery_level = ina219.percentage()
+        if not car_running and battery_level < 50.0:
+            logger.info("Battery level too low and car not running, shutting down...")
+            call("sudo shutdown -h now", shell=True)
         if light_on:
-            GPIO.output(MAINS_POWER_PIN, 1)
+            GPIO.output(LIGHT_RELAY_PIN, 1)
             if (time - light_on_time).total_seconds() / 60.0 > 10:
                 light_on = False
                 light_on_time = None
-                GPIO.output(MAINS_POWER_PIN, 0)
+                GPIO.output(LIGHT_RELAY_PIN, 0)
+                logger.info("Shutting down light after 10 minutes")
                 continue
-        #if 7 < time.hour < 19:
-        #    car_started_for_night = False
-        #    continue
-        car_running = not GPIO.input(MAINS_POWER_PIN)
+        if 7 < time.hour < 19:
+            if worklight_on:
+                logger.info("Shutting down for daytime")
+                worklight_on = False
+            GPIO.output(LIGHT_RELAY_PIN, 0)
+            continue
         if not car_started_for_night and car_running:
             car_started_for_night = True
-        if car_started_for_night and not car_running:
-            GPIO.output(MAINS_POWER_PIN, 1)
-        else:
-            GPIO.output(MAINS_POWER_PIN, 0)
+            logger.info("Car started for night")
+        if car_started_for_night and not car_running and not worklight_on:
+            worklight_on = True
+            logger.info("Car off, turning worklight on")
+            GPIO.output(LIGHT_RELAY_PIN, 1)
+        if car_started_for_night and car_running and worklight_on:
+            worklight_on = False
+            logger.info("Car back on, turning worklight off")
+            GPIO.output(LIGHT_RELAY_PIN, 0)
         await asyncio.sleep(1)
 
 
